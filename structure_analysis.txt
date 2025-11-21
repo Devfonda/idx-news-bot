@@ -1,0 +1,29 @@
+ANALISIS STRUKTUR WEBSITE IDX
+==================================================
+Title: IDX
+Total links: 15
+Total articles: 0
+
+CLASS TERPOPULER:
+container: 4
+sticky-footer-container-item: 3
+popup: 1
+popup-overlay: 1
+popup-box: 1
+box--medium: 1
+is-thick: 1
+popup-content: 1
+text-center: 1
+popup-footer: 1
+sticky-footer-container: 1
+logo-wrp: 1
+site-search: 1
+m-site-search: 1
+search-box: 1
+search-box-input: 1
+search-res: 1
+nav-container: 1
+top-nav: 1
+date-time: 1
+
+LINK BERTITA:
