@@ -14,17 +14,27 @@ import time
 import datetime
 import hashlib
 
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
 # Konfigurasi - Gunakan environment variables di Railway
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 CHANNEL_ID = os.getenv('CHANNEL_ID')
 CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '300'))
 
 if not BOT_TOKEN:
-    print("❌ ERROR: BOT_TOKEN not set!")
+    logging.error("❌ ERROR: BOT_TOKEN environment variable is not set!")
+    logging.error("💡 Please set BOT_TOKEN in Railway Dashboard → Variables")
+    logging.error("   BOT_TOKEN should be: 8249944565:AAH3gLQ9E_UvsJ9rVGmWEC3syNOV9Jmha4U")
     exit(1)
-    
+
 if not CHANNEL_ID:
-    print("❌ ERROR: CHANNEL_ID not set!")
+    logging.error("❌ ERROR: CHANNEL_ID environment variable is not set!")
+    logging.error("💡 Please set CHANNEL_ID in Railway Dashboard → Variables") 
+    logging.error("   CHANNEL_ID should be: @TestingBot")
     exit(1)
 
 logging.info(f"✅ Environment Variables loaded:")
