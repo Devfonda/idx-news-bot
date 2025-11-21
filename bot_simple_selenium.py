@@ -1,7 +1,6 @@
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
 from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram import Update
 from bs4 import BeautifulSoup
@@ -28,9 +27,9 @@ sent_news_titles = set()
 sent_news_links = set()
 
 def setup_driver():
-    """Setup Chrome driver untuk Selenium"""
+    """Setup Chrome driver untuk Selenium (Railway Compatible)"""
     chrome_options = Options()
-    chrome_options.add_argument("--headless=new")     # mode headless terbaru
+    chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
@@ -40,8 +39,10 @@ def setup_driver():
     chrome_options.add_argument("--remote-debugging-port=9222")
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+    # 🔥 Penting: gunakan driver dari sistem (Railway)
+    service = Service("/usr/bin/chromedriver")
     
-    service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=chrome_options)
     return driver
 
