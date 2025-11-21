@@ -20,13 +20,11 @@ CHANNEL_ID = os.getenv('CHANNEL_ID')
 CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '300'))
 
 if not BOT_TOKEN:
-    logging.error("❌ BOT_TOKEN tidak ditemukan di Environment Variables!")
-    logging.error("💡 Pastikan sudah setting BOT_TOKEN di Railway Dashboard")
+    print("❌ ERROR: BOT_TOKEN not set!")
     exit(1)
-
+    
 if not CHANNEL_ID:
-    logging.error("❌ CHANNEL_ID tidak ditemukan di Environment Variables!")
-    logging.error("💡 Pastikan sudah setting CHANNEL_ID di Railway Dashboard")
+    print("❌ ERROR: CHANNEL_ID not set!")
     exit(1)
 
 logging.info(f"✅ Environment Variables loaded:")
