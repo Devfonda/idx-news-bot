@@ -1,19 +1,38 @@
+import os
+import logging
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+from webdriver_manager.core.os_manager import ChromeType
 from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram import Update
 from bs4 import BeautifulSoup
-from selenium.webdriver.chrome.options import Options
+import requests
 import asyncio
-import logging
 import time
 import datetime
+import hashlib
 
-# Konfigurasi - GANTI DENGAN DATA ANDA
-BOT_TOKEN = "8249944565:AAH3gLQ9E_UvsJ9rVGmWEC3syNOV9Jmha4U"
-CHANNEL_ID = "@TestingBot"
-CHECK_INTERVAL = 300  # 5 menit (dalam detik)
+# Konfigurasi - Gunakan environment variables di Railway
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+CHANNEL_ID = os.getenv('CHANNEL_ID')
+CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '300'))
+
+if not BOT_TOKEN:
+    logging.error("❌ BOT_TOKEN tidak ditemukan di Environment Variables!")
+    logging.error("💡 Pastikan sudah setting BOT_TOKEN di Railway Dashboard")
+    exit(1)
+
+if not CHANNEL_ID:
+    logging.error("❌ CHANNEL_ID tidak ditemukan di Environment Variables!")
+    logging.error("💡 Pastikan sudah setting CHANNEL_ID di Railway Dashboard")
+    exit(1)
+
+logging.info(f"✅ Environment Variables loaded:")
+logging.info(f"   BOT_TOKEN: {BOT_TOKEN[:10]}...")
+logging.info(f"   CHANNEL_ID: {CHANNEL_ID}")
+logging.info(f"   CHECK_INTERVAL: {CHECK_INTERVAL}")
 
 # Setup logging
 logging.basicConfig(
@@ -27,8 +46,10 @@ sent_news_titles = set()
 sent_news_links = set()
 
 def setup_driver():
-    """Setup Chrome driver untuk Selenium (Railway Compatible)"""
+    """Setup Chrome driver untuk Railway"""
     chrome_options = Options()
+    
+    # Options untuk Railway/Cloud environment
     chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
@@ -39,129 +60,184 @@ def setup_driver():
     chrome_options.add_argument("--remote-debugging-port=9222")
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-
-    # 🔥 Penting: gunakan driver dari sistem (Railway)
-    service = Service("/usr/bin/chromedriver")
     
-    driver = webdriver.Chrome(service=service, options=chrome_options)
-    return driver
+    # Untuk Railway, gunakan CHROMIUM
+    try:
+        service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+        logger.info("✅ ChromeDriver berhasil diinisialisasi")
+        return driver
+    except Exception as e:
+        logger.error(f"❌ Gagal setup ChromeDriver: {e}")
+        raise
+
+def get_news_requests():
+    """Mengambil berita menggunakan requests"""
+    try:
+        logger.info("🔄 Mengakses website IDX dengan Requests...")
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'id,en-US;q=0.7,en;q=0.3',
+            'Accept-Encoding': 'gzip, deflate, br',
+        }
+        
+        response = requests.get("https://www.idx.co.id/id/berita/", headers=headers, timeout=30)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.content, 'html.parser')
+        news_items = []
+        
+        # Cari berita berdasarkan struktur yang umum di IDX
+        # Coba berbagai kemungkinan selector
+        selectors_to_try = [
+            'a[href*="/berita/"]',
+            'div.news-item a',
+            'div.berita-item a',
+            'article a',
+            'div.post-title a',
+            'h2 a',
+            'h3 a'
+        ]
+        
+        for selector in selectors_to_try:
+            elements = soup.select(selector)
+            for element in elements:
+                try:
+                    title = element.get_text(strip=True)
+                    href = element.get('href', '')
+                    
+                    if len(title) < 10:
+                        continue
+                    
+                    # Format URL
+                    if href.startswith('/'):
+                        full_url = f"https://www.idx.co.id{href}"
+                    elif href.startswith('http'):
+                        full_url = href
+                    else:
+                        full_url = f"https://www.idx.co.id/{href}"
+                    
+                    # Skip invalid links
+                    if any(invalid in full_url for invalid in ['javascript:', 'mailto:', '#']):
+                        continue
+                    
+                    # Filter berita relevan
+                    if is_relevant_news(title):
+                        news_item = {
+                            'title': title,
+                            'link': full_url,
+                            'date': datetime.datetime.now().strftime("%Y-%m-%d")
+                        }
+                        news_items.append(news_item)
+                        logger.info(f"📰 Ditemukan: {title[:60]}...")
+                        
+                except Exception as e:
+                    continue
+        
+        # Remove duplicates
+        unique_news = []
+        seen = set()
+        for item in news_items:
+            identifier = item['title'].lower().strip()
+            if identifier not in seen:
+                seen.add(identifier)
+                unique_news.append(item)
+        
+        logger.info(f"✅ Total {len(unique_news)} berita unik ditemukan")
+        return unique_news
+        
+    except Exception as e:
+        logger.error(f"❌ Error Requests: {e}")
+        return []
+
+def is_relevant_news(title):
+    """Filter berita yang relevan"""
+    if not title or len(title) < 10:
+        return False
+        
+    title_lower = title.lower()
+    
+    keywords = [
+        'aksi korporasi', 'right issue', 'ekspansi bisnis', 'backdoor listing', 
+        'corporate action', 'rights issue', 'dividen', 'stock split', 'obligasi',
+        'emitmen', 'ipo', 'saham', 'bursa efek', 'korporasi', 'ekspansi',
+        'rups', 'ratah', 'obligasi', 'sukuk', 'reksadana', 'laporan',
+        'financial', 'keuangan', 'laba', 'rugi', 'profit', 'emiten', 'bursa',
+        'efek', 'investasi', 'portofolio', 'sekuritas', 'trading'
+    ]
+    
+    return any(keyword in title_lower for keyword in keywords)
 
 def get_news_selenium():
-    """Mengambil berita menggunakan Selenium"""
+    """Fallback menggunakan Selenium jika requests gagal"""
     driver = None
     try:
-        logger.info("🔄 Mengakses website IDX dengan Selenium...")
+        logger.info("🔄 Mencoba dengan Selenium...")
         driver = setup_driver()
         driver.get("https://www.idx.co.id/id/berita/")
         
-        # Tunggu page load
-        time.sleep(5)
+        # Tunggu lebih lama untuk render JavaScript
+        time.sleep(10)
         
-        # Dapatkan HTML setelah render JavaScript
+        # Dapatkan HTML
         html_content = driver.page_source
+        
+        # Simpan untuk debugging (opsional)
+        if os.getenv('DEBUG_HTML'):
+            with open("/tmp/debug_page.html", "w", encoding="utf-8") as f:
+                f.write(html_content)
+            logger.info("💾 HTML disimpan untuk debugging")
+        
+        # Parse dengan BeautifulSoup
         soup = BeautifulSoup(html_content, 'html.parser')
         
+        # Gunakan logic yang sama dengan requests
         news_items = []
+        links = soup.find_all('a', href=True)
         
-        # Cari semua elemen yang mungkin berisi berita
-        # Coba berbagai selector yang umum
-        selectors_to_try = [
-            'div[class*="news"]',
-            'div[class*="berita"]', 
-            'article',
-            'div.list-berita',
-            'div.news-item',
-            'div.berita-item',
-            'div.post',
-            'div.item'
-        ]
-        
-        news_containers = []
-        for selector in selectors_to_try:
-            elements = soup.select(selector)
-            if elements:
-                news_containers.extend(elements)
-                logger.info(f"✅ Ditemukan {len(elements)} elemen dengan selector: {selector}")
-        
-        # Jika tidak ditemukan dengan selector spesifik, cari semua div dan article
-        if not news_containers:
-            news_containers = soup.find_all(['div', 'article'])
-            logger.info(f"✅ Menggunakan fallback: ditemukan {len(news_containers)} elemen div/article")
-        
-        logger.info(f"📊 Total kontainer berita yang akan diproses: {len(news_containers)}")
-        
-        for container in news_containers[:30]:  # Batasi 30 item untuk performa
+        for link in links:
             try:
-                # Ekstrak judul - coba berbagai elemen
-                title_elem = None
-                for tag in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
-                    title_elem = container.find(tag)
-                    if title_elem:
-                        break
+                title = link.get_text(strip=True)
+                href = link['href']
                 
-                if not title_elem:
-                    title_elem = container.find('a')
-                if not title_elem:
-                    title_elem = container.find('span')
-                if not title_elem:
-                    title_elem = container.find('div', class_=lambda x: x and any(word in str(x).lower() for word in ['title', 'judul', 'head']))
-                
-                if not title_elem:
+                if len(title) < 10:
                     continue
+                
+                # Format URL
+                if href.startswith('/'):
+                    full_url = f"https://www.idx.co.id{href}"
+                elif href.startswith('http'):
+                    full_url = href
+                else:
+                    continue  # Skip relative URLs tanpa slash
+                
+                # Filter
+                if ('/berita/' in full_url and 
+                    is_relevant_news(title) and
+                    not any(invalid in full_url for invalid in ['javascript:', 'mailto:', '#'])):
                     
-                title = title_elem.get_text(strip=True)
-                if not title or len(title) < 10:
-                    continue
-                
-                # Ekstrak link
-                link_elem = container.find('a', href=True)
-                if not link_elem:
-                    # Jika tidak ada link di container, coba cari di parent
-                    link_elem = title_elem.find('a', href=True)
-                
-                if not link_elem:
-                    continue
-                    
-                link = link_elem['href']
-                if link.startswith('/'):
-                    link = f"https://www.idx.co.id{link}"
-                elif not link.startswith('http'):
-                    link = f"https://www.idx.co.id/{link}"
-                
-                # Skip link yang tidak valid
-                if 'javascript:' in link or 'mailto:' in link or '#' in link:
-                    continue
-                
-                # Ekstrak tanggal
-                date_elem = (container.find('span', class_='date') or 
-                            container.find('time') or
-                            container.find('div', class_='date') or
-                            container.find('span', class_=lambda x: x and 'date' in str(x).lower()))
-                date = date_elem.get_text(strip=True) if date_elem else datetime.datetime.now().strftime("%Y-%m-%d")
-                
-                # Filter berita berdasarkan kata kunci
-                keywords = [
-                    'aksi korporasi', 'right issue', 'ekspansi bisnis', 'backdoor listing', 
-                    'corporate action', 'rights issue', 'dividen', 'stock split', 'obligasi',
-                    'emitmen', 'ipo', 'saham', 'bursa efek', 'korporasi', 'ekspansi',
-                    'rups', 'ratah', 'obligasi', 'sukuk', 'reksadana'
-                ]
-                
-                title_lower = title.lower()
-                if any(keyword in title_lower for keyword in keywords):
                     news_items.append({
                         'title': title,
-                        'link': link,
-                        'date': date
+                        'link': full_url,
+                        'date': datetime.datetime.now().strftime("%Y-%m-%d")
                     })
-                    logger.info(f"📰 Berita relevan: {title[:50]}...")
                     
             except Exception as e:
-                logger.debug(f"Error parsing container: {e}")
                 continue
-                
-        logger.info(f"✅ Total berita relevan ditemukan: {len(news_items)}")
-        return news_items
+        
+        # Remove duplicates
+        unique_news = []
+        seen = set()
+        for item in news_items:
+            identifier = item['title'].lower().strip()
+            if identifier not in seen:
+                seen.add(identifier)
+                unique_news.append(item)
+        
+        logger.info(f"✅ Selenium menemukan {len(unique_news)} berita")
+        return unique_news
         
     except Exception as e:
         logger.error(f"❌ Error Selenium: {e}")
@@ -171,29 +247,37 @@ def get_news_selenium():
             driver.quit()
 
 async def send_news(context: ContextTypes.DEFAULT_TYPE):
-    """Kirim berita baru ke Telegram"""
+    """Kirim berita baru ke channel"""
     try:
-        logger.info("🔍 Mengecek berita baru...")
-        news_items = get_news_selenium()
+        logger.info("🔍 Memulai pencarian berita...")
+        
+        # Coba requests dulu
+        news_items = get_news_requests()
+        
+        # Fallback ke Selenium
+        if not news_items:
+            logger.info("🔄 Fallback ke Selenium...")
+            news_items = get_news_selenium()
         
         if not news_items:
-            logger.info("📭 Tidak ada berita baru yang ditemukan")
+            logger.info("📭 Tidak ada berita baru ditemukan")
             return
             
         sent_count = 0
         for item in news_items:
-            # Cek duplikat berdasarkan judul DAN link (lebih akurat)
-            title_hash = hash(item['title'].strip().lower())
-            link_hash = hash(item['link'].strip().lower())
+            # Generate hash untuk deduplication
+            title_hash = hashlib.md5(item['title'].strip().lower().encode()).hexdigest()
             
-            if title_hash not in sent_news_titles and link_hash not in sent_news_links:
-                message = (
-                    f"📢 **{item['title']}**\n\n"
-                    f"📅 {item['date']}\n\n"
-                    f"🔗 {item['link']}\n\n"
-                    f"#BeritaSaham #IDX #Investasi"
-                )
+            if title_hash not in sent_news_titles:
                 try:
+                    # Format pesan
+                    message = (
+                        f"📢 **{item['title']}**\n\n"
+                        f"📅 {item['date']}\n\n"
+                        f"🔗 {item['link']}\n\n"
+                        f"#BeritaSaham #IDX #Investasi"
+                    )
+                    
                     await context.bot.send_message(
                         chat_id=CHANNEL_ID,
                         text=message,
@@ -203,93 +287,118 @@ async def send_news(context: ContextTypes.DEFAULT_TYPE):
                     
                     # Simpan ke memory
                     sent_news_titles.add(title_hash)
-                    sent_news_links.add(link_hash)
                     sent_count += 1
                     
-                    logger.info(f"✅ Berita terkirim: {item['title'][:50]}...")
-                    await asyncio.sleep(2)  # Delay 2 detik antar pesan
+                    logger.info(f"✅ Terkirim: {item['title'][:50]}...")
+                    await asyncio.sleep(1)  # Delay antar pesan
                     
                 except Exception as e:
-                    logger.error(f"❌ Error mengirim pesan: {e}")
+                    logger.error(f"❌ Gagal kirim pesan: {e}")
             else:
-                logger.debug(f"⏭️ Berita sudah pernah dikirim: {item['title'][:50]}...")
+                logger.debug(f"⏭️ Skip: {item['title'][:50]}...")
         
         logger.info(f"📨 Berhasil mengirim {sent_count} berita baru")
         
-        # Bersihkan memory jika terlalu besar (prevent memory leak)
-        if len(sent_news_titles) > 1000:
+        # Cleanup memory
+        if len(sent_news_titles) > 500:
+            # Keep only last 300 items
             sent_news_titles.clear()
-            sent_news_links.clear()
-            logger.info("🧹 Memory cache dibersihkan")
+            logger.info("🧹 Memory dibersihkan")
         
     except Exception as e:
-        logger.error(f"❌ Error in send_news: {e}")
+        logger.error(f"❌ Error di send_news: {e}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk command /start"""
+    """Handler /start"""
     await update.message.reply_text(
-        "🤖 **IDX Stock News Bot** (Simple Version)\n\n"
-        "Saya akan mengirimkan berita terbaru tentang:\n"
-        "• 📊 Aksi Korporasi\n• 💰 Right Issue\n"
-        "• 🏢 Ekspansi Bisnis\n• 🔄 Backdoor Listing\n"
-        "• 💸 Dividen\n• 📈 Stock Split\n\n"
-        "✅ **FITUR:**\n"
-        "• Menggunakan Selenium\n• Auto-clean memory\n"
-        "• Cek setiap 5 menit\n\n"
-        "Bot aktif dan sedang memantau berita dari IDX!"
+        "🤖 **IDX Stock News Bot** (Railway Edition)\n\n"
+        "Saya memantau berita saham dari IDX secara real-time!\n\n"
+        "📋 Perintah tersedia:\n"
+        "• /start - Info bot\n"
+        "• /status - Status bot\n" 
+        "• /test - Test pencarian berita\n"
+        "• /clear - Reset cache\n"
+        "• /debug - Analisis website\n\n"
+        "🔧 Deployed di Railway"
     )
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk command /status"""
+    """Handler /status"""
     await update.message.reply_text(
         f"📊 **Status Bot**\n\n"
-        f"• Berita yang sudah dikirim: {len(sent_news_titles)}\n"
-        f"• Interval pengecekan: {CHECK_INTERVAL} detik\n"
-        f"• Metode: Selenium WebDriver\n"
-        f"• Penyimpanan: Memory (tanpa database)\n"
+        f"• Berita dikirim: {len(sent_news_titles)}\n"
+        f"• Interval: {CHECK_INTERVAL}s\n"
+        f"• Environment: Railway\n"
         f"• Terakhir dicek: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
         f"• Status: ✅ AKTIF"
     )
 
 async def clear_cache(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk command /clear"""
+    """Handler /clear"""
     sent_news_titles.clear()
     sent_news_links.clear()
-    await update.message.reply_text("✅ Cache berhasil dibersihkan! Semua berita akan dianggap baru.")
+    await update.message.reply_text("✅ Cache berhasil dibersihkan!")
 
 async def test_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk command /test - manual test"""
-    await update.message.reply_text("🔍 Mengecek berita manual...")
+    """Handler /test"""
+    await update.message.reply_text("🔍 Testing pencarian berita...")
     
-    news_items = get_news_selenium()
+    news_items = get_news_requests()
+    if not news_items:
+        news_items = get_news_selenium()
+        
     if news_items:
-        message = f"✅ Ditemukan {len(news_items)} berita relevan:\n\n"
-        for i, item in enumerate(news_items[:5]):  # Tampilkan 5 pertama
+        message = f"✅ Ditemukan {len(news_items)} berita:\n\n"
+        for i, item in enumerate(news_items[:3]):
             message += f"{i+1}. {item['title']}\n"
         await update.message.reply_text(message)
     else:
-        await update.message.reply_text("❌ Tidak ada berita yang ditemukan.")
+        await update.message.reply_text("❌ Tidak ada berita ditemukan")
+
+async def debug_site(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler /debug"""
+    await update.message.reply_text("🔧 Analisis struktur website...")
+    
+    try:
+        response = requests.get("https://www.idx.co.id/id/berita/", timeout=30)
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        analysis = "📊 **Analisis Website:**\n\n"
+        analysis += f"• Title: {soup.title.string if soup.title else 'N/A'}\n"
+        analysis += f"• Div elements: {len(soup.find_all('div'))}\n"
+        analysis += f"• Links: {len(soup.find_all('a'))}\n"
+        
+        # Cari link berita
+        news_links = []
+        for link in soup.find_all('a', href=True):
+            href = link['href']
+            if '/berita/' in href:
+                title = link.get_text(strip=True)
+                if len(title) > 10:
+                    news_links.append(title[:40])
+        
+        analysis += f"• Potential news: {len(news_links)}\n"
+        if news_links:
+            analysis += "Contoh:\n• " + "\n• ".join(news_links[:3])
+        
+        await update.message.reply_text(analysis)
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Error handler"""
-    logger.error(f"Exception while handling an update: {context.error}")
+    """Global error handler"""
+    logger.error(f"Update {update} caused error {context.error}")
 
 def main():
     """Main function"""
     try:
-        # Test Selenium pertama kali
-        logger.info("🚀 Memulai Bot IDX News (Simple Version)")
-        logger.info("🔧 Testing Selenium...")
+        logger.info("🚀 Starting IDX News Bot (Railway Edition)")
         
-        # Test koneksi Selenium
-        driver = setup_driver()
-        try:
-            driver.get("https://www.idx.co.id")
-            logger.info("✅ Selenium berhasil diinisialisasi")
-        finally:
-            driver.quit()
+        # Test koneksi
+        logger.info("🔧 Testing environment...")
         
-        # Create Telegram application
+        # Create application
         application = Application.builder().token(BOT_TOKEN).build()
         
         # Add handlers
@@ -297,27 +406,31 @@ def main():
         application.add_handler(CommandHandler("status", status))
         application.add_handler(CommandHandler("clear", clear_cache))
         application.add_handler(CommandHandler("test", test_news))
+        application.add_handler(CommandHandler("debug", debug_site))
         
-        # Add error handler
         application.add_error_handler(error_handler)
         
-        # Schedule news checking
+        # Schedule job
         if application.job_queue:
-            job_queue = application.job_queue
-            job_queue.run_repeating(send_news, interval=CHECK_INTERVAL, first=10)
-            logger.info(f"✅ JobQueue started dengan interval: {CHECK_INTERVAL} detik")
-        else:
-            logger.error("❌ JobQueue tidak tersedia!")
-            return
+            application.job_queue.run_repeating(
+                send_news, 
+                interval=CHECK_INTERVAL, 
+                first=10
+            )
+            logger.info(f"✅ Scheduled job dengan interval {CHECK_INTERVAL}s")
         
-        logger.info("🤖 Bot berhasil dimulai! Tekan Ctrl+C untuk berhenti.")
-        logger.info("📋 Perintah yang tersedia: /start, /status, /clear, /test")
+        logger.info("🤖 Bot started! Press Ctrl+C to stop.")
         
-        # Start the bot
-        application.run_polling()
+        # Start polling
+        application.run_polling(
+            drop_pending_updates=True,
+            allowed_updates=Update.ALL_TYPES
+        )
         
     except Exception as e:
-        logger.error(f"❌ Gagal memulai bot: {e}")
+        logger.error(f"❌ Failed to start bot: {e}")
+        # Exit dengan code error untuk restart di Railway
+        exit(1)
 
 if __name__ == '__main__':
     main()

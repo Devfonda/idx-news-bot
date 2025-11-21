@@ -1,7 +1,5 @@
-selenium
-webdriver-manager
-beautifulsoup4
-requests
-loguru
+selenium==4.15.0
+webdriver-manager==4.0.1
+beautifulsoup4==4.12.2
+requests==2.31.0
 python-telegram-bot[job-queue]==22.5
-
