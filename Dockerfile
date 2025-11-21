@@ -4,7 +4,6 @@ FROM python:3.10-slim
 RUN apt-get update && apt-get install -y \
     wget unzip curl \
     chromium chromium-driver \
-    xvfb \
     && apt-get clean
 
 # Set display for headless mode
